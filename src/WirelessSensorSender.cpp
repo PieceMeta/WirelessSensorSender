@@ -1,113 +1,169 @@
-#include <Arduino.h>
+#ifdef IS_ESP8266
 #include <ESP8266WiFi.h>
-
-#include "ConfigManager.h"
-#include "Logger.h"
-#include "Timing.h"
-#include "I2CManager.h"
-#include "WiFiManager.h"
-#include "BNO055Sensor.h"
-#include "OscManager.h"
-#include "StatusManager.h"
+#else
+#include <Arduino.h>
+#endif
 
 #define VERSION "v0.1.0"
-#define PRODUCT "WirelessSensorSender"
+#define PRODUCT "PulsationsKit"
 
-ConfigManager config;
-Timing timing;
-I2CManager i2c;
-WiFiManager wifi;
-OscManager osc;
-StatusManager status;
+#define LED_PIN_ERROR 0
+#define LED_PIN_ERROR_PULLUP true
+#define LED_PIN_ACTIVITY 2
+#define LED_PIN_ACTIVITY_PULLUP true
+
+#define TARGET_FPS 60.0
+
+#include <WiFiUdp.h>
+
+#include "Logger.h"
+#include "StatusManager.h"
+
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+
+#include <OSCMessage.h>
+#include <OSCTiming.h>
+
+typedef struct {
+    uint8_t system;
+    uint8_t gyro;
+    uint8_t accel;
+    uint8_t mag;
+} bno_calibration_t;
+
+typedef struct {
+    float x;
+    float y;
+    float z;
+} sensor_data_float3d_t;
+
+Adafruit_BNO055       _device;
+bno_calibration_t _calibration;
+
+WiFiUDP _out_udp;
+IPAddress _ip;
+IPAddress _ipBcast;
+IPAddress _ipServer;
+StatusManager _statusManager;
+
+long lastFrameTime;
+long frameDuration;
+char oscaddr[255];
+OSCMessage _msg;
+osctime_t time;
+sensors_event_t _event;
+imu::Vector<3> accel;
 
 void setup() {
-    config.load();
+  delay(100);
 
-    if (USE_SERIAL) {
-        Serial.begin(config.getSys()->serial_rate);
-        delay(100);
-        Serial.println();
-        Serial.println();
+  _statusManager.setup(true);
+  frameDuration = (long)(1000.0 / TARGET_FPS);
+
+  if (USE_SERIAL) {
+      Serial.begin(SERIAL_RATE);
+      Serial.println();
+      Serial.println((char *) "-------------------------");
+      Serial.println((char *) PRODUCT);
+      Serial.println((char *) VERSION);
+      Serial.println();
+  }
+
+  char log_msg[128];
+  sprintf(log_msg, "Connecting to SSID: %s", "pulsations");
+  Logger::info(log_msg);
+
+  WiFi.begin("pulsations", "pulsations");
+  uint8_t wifi_wait_count = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    _statusManager.error(true);
+    wifi_wait_count += 1;
+    if (wifi_wait_count == 8) {
+        Logger::error((char *) "WiFi connection failed.");
     }
+    delay(100);
+    _statusManager.error(false);
+  }
 
-    Logger::info((char *) PRODUCT);
-    Logger::info((char *) VERSION);
+  _ip = WiFi.localIP();
+  _ipBcast = WiFi.localIP();
+  _ipBcast[3] = 255;
+  _ipServer[3] = 2;
 
-    i2c.setup(&config, &timing);
+  Logger::info((char *) "Connected!");
 
-    status.setup(config.getSys()->use_led);
+  sprintf(log_msg, "IPADD: %u.%u.%u.%u", _ip[0], _ip[1], _ip[2], _ip[3]);
+  Logger::debug(log_msg);
+  sprintf(log_msg, "BCAST: %u.%u.%u.%u", _ipBcast[0], _ipBcast[1], _ipBcast[2], _ipBcast[3]);
+  Logger::debug(log_msg);
+  sprintf(log_msg, "RSSI: %ddBm       ", WiFi.RSSI());
+  Logger::debug(log_msg);
 
-    wifi.setup(&config, &status);
-    while (!wifi.update()) {
-        delay(WIFI_RECONNECT_DELAY_MS);
-    }
+  sprintf(oscaddr, "/bno055/%u", _ip[3]);
 
-    i2c.scanI2C();
-
-    timing.setup(&config, &wifi);
-    timing.update();
-
-    osc.setup(&config, &wifi);
+  _device = Adafruit_BNO055(0x28);
+  bool _active = _device.begin();
+  while (!_active) {
+    Logger::debug((char *) "Waiting for BNO055 on 0x28");
+    delay(10);
+    _statusManager.error(true);
+    _active = _device.begin();
+  }
+  Logger::debug((char *) "BNO055 active on 0x28");
+  _device.setExtCrystalUse(true);
+  _statusManager.error(false);
 }
 
 void loop() {
-    if (!wifi.update()) {
-        delay(WIFI_RECONNECT_DELAY_MS);
-        return;
-    }
+  if (WiFi.status() != WL_CONNECTED) {
+    _statusManager.error(true);
+    Logger::error((char *) "WiFi disconnected, reconnecting...");
+    delay(100);
+    _statusManager.error(false);
+    return;
+  }
 
-    timing.update();
-    timing.beginFrame();
-    if (i2c.update()) {
-        for (uint8_t p = 0; p < i2c.getPortCount(); p++) {
-            if (!i2c.getPort(p)->active) continue;
-            for (uint8_t d = 0; d < i2c.getSensorCount(p); d++) {
-                BNO055Sensor *sensor = i2c.getSensor(p, d);
-                if (!sensor->isActive()) continue;
+  lastFrameTime = millis();
 
-                osc.initMessage(sensor->getOscAddress().c_str(), timing.getNtpTime());
+  _device.getEvent(&_event);
+  accel = _device.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
 
-                if (config.getSend()->orientation) {
-                  osc.addFloat(sensor->getOrientation()->x);
-                  osc.addFloat(sensor->getOrientation()->y);
-                  osc.addFloat(sensor->getOrientation()->z);
-                }
+  _device.getCalibration(&(_calibration.system), &(_calibration.gyro),
+    &(_calibration.accel), &(_calibration.mag));
 
-                if (config.getSend()->accel) {
-                  osc.addFloat(sensor->getAcceleration()->x);
-                  osc.addFloat(sensor->getAcceleration()->y);
-                  osc.addFloat(sensor->getAcceleration()->z);
-                }
+  _msg.empty();
+  _msg.setAddress(oscaddr);
+  time.seconds = (long)(millis() * 0.001);
+  time.fractionofseconds = (long)(millis() % 1000);
+  _msg.add(time);
 
-                if (config.getSend()->temp) {
-                  osc.addInt(sensor->getTemperature());
-                }
+  _msg.add((float)_event.orientation.x);
+  _msg.add((float)_event.orientation.y);
+  _msg.add((float)_event.orientation.z);
 
-                if (config.getSend()->calibration) {
-                  uint8_t cal_blob[] = {
-                    sensor->getCalibration()->system,
-                    sensor->getCalibration()->gyro,
-                    sensor->getCalibration()->accel,
-                    sensor->getCalibration()->mag
-                  };
-                  osc.addBlob(cal_blob, 4);
-                }
+  _msg.add((float)accel.x());
+  _msg.add((float)accel.y());
+  _msg.add((float)accel.z());
 
-                osc.send(wifi.getBroadcastIp(), config.getOsc()->send_port);
-            }
-        }
-    }
+  uint8_t cal_blob[] = {
+    _calibration.system,
+    _calibration.gyro,
+    _calibration.accel,
+    _calibration.mag
+  };
+  _msg.add(cal_blob, 4);
 
-    timing.endFrame();
-    if (timing.getFrameDuration() <= config.getSys()->data_update_ms) {
-        status.error(false);
-        delay(config.getSys()->data_update_ms - timing.getFrameDuration());
-    } else {
-        status.error(true);
-        if (LOG_LEVEL == Logger::LOG_LEVEL_DEBUG) {
-            char log_msg[64];
-            sprintf(log_msg, "Long send: %dms", timing.getFrameDuration());
-            Logger::debug(log_msg);
-        }
-    }
+  _statusManager.activity(true);
+  _out_udp.beginPacket(_ipBcast, 8888);
+  _msg.send(_out_udp);
+  _out_udp.endPacket();
+  _statusManager.activity(false);
+
+  if (millis() - lastFrameTime < frameDuration) {
+    _statusManager.error(false);
+    delay(frameDuration - (millis() - lastFrameTime));
+  } else {
+    _statusManager.error(true);
+  }
 }
