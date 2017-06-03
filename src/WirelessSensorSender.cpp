@@ -12,7 +12,7 @@
 #define LED_PIN_ACTIVITY 2
 #define LED_PIN_ACTIVITY_PULLUP true
 
-#define TARGET_FPS 60.0
+#define TARGET_FPS 30.0
 
 #include <WiFiUdp.h>
 
@@ -48,12 +48,14 @@ IPAddress _ipServer;
 StatusManager _statusManager;
 
 long lastFrameTime;
+long lastCalibrationUpdate;
 long frameDuration;
 char oscaddr[255];
 OSCMessage _msg;
 osctime_t time;
 sensors_event_t _event;
 imu::Vector<3> accel;
+imu::Vector<3> euler;
 
 void setup() {
   delay(100);
@@ -113,6 +115,10 @@ void setup() {
   Logger::debug((char *) "BNO055 active on 0x28");
   _device.setExtCrystalUse(true);
   _statusManager.error(false);
+
+  lastCalibrationUpdate = millis();
+  _device.getCalibration(&(_calibration.system), &(_calibration.gyro),
+    &(_calibration.accel), &(_calibration.mag));
 }
 
 void loop() {
@@ -126,21 +132,27 @@ void loop() {
 
   lastFrameTime = millis();
 
-  _device.getEvent(&_event);
-  accel = _device.getVector(Adafruit_BNO055::VECTOR_ACCELEROMETER);
+  accel = _device.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
+  euler = _device.getVector(Adafruit_BNO055::VECTOR_EULER);
 
-  _device.getCalibration(&(_calibration.system), &(_calibration.gyro),
-    &(_calibration.accel), &(_calibration.mag));
+  if (lastFrameTime - lastCalibrationUpdate >= 1000) {
+    lastCalibrationUpdate = lastFrameTime;
+    _device.getCalibration(&(_calibration.system), &(_calibration.gyro),
+      &(_calibration.accel), &(_calibration.mag));
+  }
+
+  _statusManager.error(!_device.isFullyCalibrated());
 
   _msg.empty();
   _msg.setAddress(oscaddr);
+
   time.seconds = (long)(millis() * 0.001);
   time.fractionofseconds = (long)(millis() % 1000);
   _msg.add(time);
 
-  _msg.add((float)_event.orientation.x);
-  _msg.add((float)_event.orientation.y);
-  _msg.add((float)_event.orientation.z);
+  _msg.add((float)euler.x());
+  _msg.add((float)euler.y());
+  _msg.add((float)euler.z());
 
   _msg.add((float)accel.x());
   _msg.add((float)accel.y());
@@ -160,7 +172,7 @@ void loop() {
   _out_udp.endPacket();
   _statusManager.activity(false);
 
-  if (millis() - lastFrameTime < frameDuration) {
+  if (millis() - lastFrameTime <= frameDuration) {
     _statusManager.error(false);
     delay(frameDuration - (millis() - lastFrameTime));
   } else {

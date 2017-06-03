@@ -13,7 +13,7 @@ extern "C" {
 #include "Timing.h"
 #include "BNO055Sensor.h"
 
-#define NUM_I2C_PORTS 8
+#define NUM_I2C_PORTS 1
 #define NUM_I2C_ADDRESSES 128
 #define NUM_SENSORS_PER_PORT 2
 
