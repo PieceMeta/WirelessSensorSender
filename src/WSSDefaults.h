@@ -1,7 +1,7 @@
 #ifndef __WSS_USER_DEFAULTS_H__
 #define __WSS_USER_DEFAULTS_H__
 
-#define LOG_LEVEL 1   // Logger::LOG_LEVEL_INFO
+#define LOG_LEVEL 0   // Logger::LOG_LEVEL_INFO
 
 //
 //

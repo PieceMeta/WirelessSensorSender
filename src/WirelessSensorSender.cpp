@@ -72,27 +72,11 @@ void setup() {
       Serial.println();
   }
 
-
-  _device = Adafruit_BNO055(0x28);
-  bool _active = _device.begin();
-  while (!_active) {
-    Logger::debug((char *) "Waiting for BNO055 on 0x28");
-    delay(10);
-    _statusManager.error(true);
-    _active = _device.begin();
-  }
-  Logger::debug((char *) "BNO055 active on 0x28");
-  _device.setExtCrystalUse(true);
-
-  lastCalibrationUpdate = millis();
-  _device.getCalibration(&(_calibration.system), &(_calibration.gyro),
-    &(_calibration.accel), &(_calibration.mag));
-
   char log_msg[128];
   sprintf(log_msg, "Connecting to SSID: %s", "pulsations");
   Logger::info(log_msg);
 
-  WiFi.begin("pulsations", "pulsations");
+  WiFi.begin("Speck", "SpeckForGood");
   uint8_t wifi_wait_count = 0;
   while (WiFi.status() != WL_CONNECTED) {
     _statusManager.error(true);
@@ -121,6 +105,22 @@ void setup() {
   sprintf(oscaddr, "/bno055/%u", _ip[3]);
 
   _statusManager.error(false);
+
+
+  _device = Adafruit_BNO055(0x28);
+  bool _active = _device.begin();
+  while (!_active) {
+    Logger::debug((char *) "Waiting for BNO055 on 0x28");
+    delay(100);
+    _statusManager.error(true);
+    _active = _device.begin();
+  }
+  Logger::debug((char *) "BNO055 active on 0x28");
+  _device.setExtCrystalUse(true);
+
+  lastCalibrationUpdate = millis();
+  _device.getCalibration(&(_calibration.system), &(_calibration.gyro),
+    &(_calibration.accel), &(_calibration.mag));
 }
 
 void loop() {
@@ -152,7 +152,7 @@ void loop() {
   time.fractionofseconds = (long)(millis() % 1000);
   _msg.add(time);
 
-  _msg.add((float)euler.x());
+  _msg.add((float)euler.x() - 180.0);
   _msg.add((float)euler.y());
   _msg.add((float)euler.z());
 

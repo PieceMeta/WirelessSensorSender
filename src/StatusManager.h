@@ -21,15 +21,23 @@ public:
     }
 
     void error(boolean active) {
-        if (_use_led) setLED(LED_PIN_ERROR, active, LED_PIN_ERROR_PULLUP);
+        if (_use_led && active != _error) {
+          _error = active;
+          setLED(LED_PIN_ERROR, active, LED_PIN_ERROR_PULLUP);
+        }
     }
 
     void activity(boolean active) {
-        if (_use_led && USE_ACTIVITY_LED) setLED(LED_PIN_ACTIVITY, active, LED_PIN_ACTIVITY_PULLUP);
+        if (_use_led && active != _activity) {
+          _activity = active;
+          setLED(LED_PIN_ACTIVITY, active, LED_PIN_ACTIVITY_PULLUP);
+        }
     }
 
 private:
     boolean _use_led;
+    boolean _error;
+    boolean _activity;
 
     void setLED(uint8_t pin, boolean active, boolean pullup) {
         if (active) {
